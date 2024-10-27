@@ -1,10 +1,11 @@
 import requests
 import pandas as pd
 import time
+import random
 import plotly.express as px
 import dash
 from dash import dcc, html
-from dash.dependencies import Input, Output
+from dash.dependencies import Input, Output, State
 
 # First we set the key in order to be able to get the data from the API
 API_Steam_Key = 'DC5161B0229D2AC6AC15F327189C8613'
@@ -12,176 +13,203 @@ API_Steam_Key = 'DC5161B0229D2AC6AC15F327189C8613'
 # Set the url from which we'll take the data
 url = 'https://api.steampowered.com'
 
+# Method to obtain a list of games from Steam API
 def getGamesList():
-    response = requests.get(url + '/ISteamApps/GetAppList/v2/')
-    if response.status_code != 200:
+    response = requests.get(url + '/ISteamApps/GetAppList/v2/') # Get request
+    if response.status_code != 200: # Chceck possible errors 
         print(f"Error in request: {response.status_code}")
         return None
     try:
+        # Transform data and filter specific fields
         transformed_data = response.json()
         games = transformed_data['applist']['apps']
-        if not games:
-            print("List of games is empty!!")
-            return None
         
-        # Filter games 
+        # Filter games to avoid names like "TestXXX" and spaces in word
         games = [game for game in games if 'name' in game and game['name'].strip()
                  and 'test' not in game['name'].lower()]
         return games
 
-    except ValueError as e:
+    # Handle possible exceptions during execution
+    except Exception as e:
         print(f"Error processing JSON: {e}")
-        return None
+        return []
 
+# Method to obtain details of a game by its appid
 def getGameDetails(appid):
     try:
+        # Get request for selected game and data transformation to json
         resp = requests.get(f"https://store.steampowered.com/api/appdetails?appids={appid}")
         game_det = resp.json()
+        # If there is appid and the request is valid
         if str(appid) in game_det and game_det[str(appid)]['success']:
-            genres = game_det[str(appid)]['data'].get('genres', [])
-            if genres:
-                return [genre['description'] for genre in genres] # Return genres
-            else: 
-                return []
+            # Obtain genres, imgage url and a short_desc for the specified game
+            data = game_det[str(appid)]['data']
+            genres = data.get('genres', [])
+            img_url = data.get('header_image', '') # Obtain image url from game
+            short_desc = data.get('short_description', '') # Obtain game description
+
+            # Make sure in genres we have a list, otherwise we set a list to avoid errors in data preprocessing
+            if not isinstance(genres, list):
+                genres = []
+            genre_list = [genre['description'] for genre in genres] # Return genres
+
+            return genre_list, img_url, short_desc # Return all details
+        else:
+            print(f"--- Game details not found for game with appid: {appid} ---")
+    
+    # Handle possible errors during execution
     except Exception as e:
             print(f"Error in game with appid {appid}: {e}")
-            return["Exception"]
+    
+    return [], '', '' # If exception, return this parameters to avoid errors during data preprocessing
 
-def getGamesWithGenres():
-    games = getGamesList()[:10] # Sample 50 games
+# Obtain a list with valid games and all their fields
+def getGamesWithGenres(num_games):
+    games = getGamesList()[:num_games] # Sample spcified games in parameter
     games_genre = []
 
     for game in games:
         appid = game['appid']
         name = game['name']
-        genres = getGameDetails(appid)
-        games_genre.append({
-            'appid': appid,
-            'name': name,
-            'genres': genres
-        })
+        genres, img_url, short_desc = getGameDetails(appid)
+
+        if genres and img_url: # Make sure this exists, otherwise we won't append to list
+            games_genre.append({
+                'appid': appid,
+                'name': name,
+                'genres': genres,
+                'img_url': img_url,
+                'description': short_desc
+            })
+        else:
+            print(f"Skipped game '{name}' because of missing data")
         time.sleep(1) # Sleep 1 sec between requests to avoid getting blocked
 
     return games_genre 
 
-if __name__ == '__main__':
-    games_data = getGamesWithGenres()
+# Run Dash application
+app = dash.Dash(__name__)
 
-    df = pd.DataFrame(games_data)
-    
-    df = df[df['genres'].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+# Obtener data
+games_data = getGamesWithGenres(1000)
+df = pd.DataFrame(games_data) # Set a DataFrame with obtained games
+"""Filter DataFrame, we want only valid genre and avoid null values or other data types.
+   We use a lambda function where x is every value of genre column. Finally the DataFrame will only
+   contain columns in which genres is a list with at least a genre. """ 
+df = df[df['genres'].apply(lambda x: isinstance(x, list) and len(x) > 0)]
 
-    # Exploding genres to count the occurrences of each genre
-    genre_count = df.explode('genres').groupby('genres')['appid'].count().reset_index()
-    genre_count.columns = ['genre', 'count']
-
-    fig = px.scatter(genre_count, x='genre', y='count', size='count', color='genre', 
-                    hover_name='genre', size_max=60, title="Géneros de Videojuegos")
-
-    # Inicializar la aplicación Dash
-    app = dash.Dash(__name__)
-
-    # Layout de la aplicación
-    app.layout = html.Div([
-        dcc.Graph(id='bubble-chart', figure=fig),
-        html.Div(id='popup-content', style={'display': 'none', 'position': 'absolute', 
-                                            'top': '100px', 'left': '50px', 'zIndex': '1000',
-                                            'backgroundColor': 'white', 'border': '1px solid black',
-                                            'padding': '10px'})  # Estilo para el pop-up
-    ])
-
-    # Callback para manejar el clic en las burbujas
-    @app.callback(
-        Output('popup-content', 'children'),
-        [Input('bubble-chart', 'clickData')]
-    )
-
-    def display_popup(clickData):
-        if clickData:
-            # Depuración para verificar qué se captura en el click
-            print(clickData)  # Imprimir los datos del clic
-
-            genre_clicked = clickData['points'][0]['hovertext']  # El género sobre el cual se hizo clic
-            # Filtrar los juegos pertenecientes a ese género
-            games_in_genre = df[df['genres'].apply(lambda genres: genre_clicked in genres)]
-
-            # Crear un gráfico de burbujas para los juegos dentro de ese género
-            game_count = games_in_genre.groupby('name')['appid'].count().reset_index()
-            game_count.columns = ['name', 'count']
-
-            fig_games = px.scatter(game_count, x='name', y='count', size='count', color='name', 
-                                   hover_name='name', size_max=40, title=f'Juegos en {genre_clicked}')
-
-            # Cambiar el estilo del pop-up para que sea visible
-            return html.Div([
-                dcc.Graph(figure=fig_games)  # Mostrar gráfico de juegos dentro de la ventana emergente
-            ], style={'display': 'block', 'position': 'absolute', 
-                      'top': '100px', 'left': '50px', 'zIndex': '1000',
-                      'backgroundColor': 'white', 'border': '1px solid black',
-                      'padding': '10px'})
-        return None
-
-    app.run_server(debug=True)
-    
-    """
-    games_data = getGamesWithGenres()
-
-    df = pd.DataFrame(games_data)
-    #print(df['genres'])
-    
-    df = df[df['genres'].apply(lambda x: isinstance(x, list) and len(x) > 0)]
-    #print(df.head())
-    #print("PRUEBA REALIZADA\n")
-
-    df_grouped = df.groupby(['appid', 'name']).agg({'genres': lambda x: ', '.join(sum(x, []))}).reset_index(drop=True, inplace=True)
-    #print(f"Tamaño del contenido del dataframe: {df['name'].size}")
-    # print(df.head(n=50))
-
-    genre_count = df.explode('genres').groupby('genres')['appid'].count().reset_index()
-    genre_count.columns = ['genre', 'count']
-
-    fig = px.scatter(genre_count, x='genre', y='count', size='count', color='genre', 
-                    hover_name='genre', size_max=60, title="Géneros de Videojuegos")
+# Organise games per genre in a dictionari
+genre_dict = {}
+for index, row in df.iterrows():
+    for genre in row['genres']:
+        if genre not in genre_dict:
+            genre_dict[genre] = []
+        genre_dict[genre].append({
+            'name': row['name'],
+            'img_url': row['img_url'],
+            'description': row['description']
+        })
 
 
-    # Create list of games and genres
-    genre_dict = {}
-    for index, row in df.iterrows():
-        for genre in row ['genres']:
-            if genre not in genre_dict:
-                genre_dict[genre] = []
-            genre_dict[genre].append(row['name'])
-    
-    # Create DataFrame from genres dict
-    genres = list(genre_dict.keys())
-    games_genre = [len(genre_dict[genre]) for genre in genres]
-    games_list_per_genre = ['<br>'.join(genre_dict[genre]) for genre in genres] # Games list in HTML format
+# Set application layout
+app.layout = html.Div([
+    dcc.Graph(id='main-bubble-chart'),
+    html.Button("Volver", id='back-button', style={'display': 'none'}),
+    dcc.Store(id='reset-clickdata'),  # Add a Store to save reset status
+    html.Div(id='game-info')  # Div to show game's info in HTML
+])
 
-    genre_df = pd.DataFrame({
-        'Genre': genres,
-        'Game Count': games_genre,
-        'Games': games_list_per_genre # Add list of games to each bubble
-    })
+# Def Callback of the graphic
+@app.callback(
+    [Output('main-bubble-chart', 'figure'),
+     Output('back-button', 'style'),
+     Output('reset-clickdata', 'clear'),
+     Output('game-info', 'children')],
+    [Input('main-bubble-chart', 'clickData'),
+     Input('back-button', 'n_clicks')],
+    [State('reset-clickdata', 'data')]
+)
+def display_bubble_chart(clickData, back_click, reset_data):
+    ctx = dash.callback_context  # Obtain callback context to know which thing activated it
 
-    # Create graphic
-    fig = px.scatter(genre_df,
-                     x=None,
-                     y='Game Count',
-                     size='Game Count',
-                     color='Genre', # Eah genre will have a different color
-                     hover_name='Genre',
-                     hover_data={'Games': True}, # Show games list for each genre
-                     title='Bubble Chart of Games grouped by Genre',
-                     size_max=60,
-                     template='plotly')
-    
-    # Update layout in order to avoid showing X and Y axis
+    # If user press "Volver" button show the main bubble graphic again
+    if ctx.triggered[0]['prop_id'] == 'back-button.n_clicks':
+        genre_df = pd.DataFrame({
+            'Genre': list(genre_dict.keys()),
+            'Game Count': [len(genre_dict[genre]) for genre in genre_dict]
+        })
+        fig = px.scatter(genre_df,
+                         x=None,
+                         y='Game Count',
+                         size='Game Count',
+                         color='Genre',
+                         hover_name='Genre',
+                         title='Bubble Chart of Games grouped by Genre',
+                         size_max=60)
+
+        fig.update_layout(
+            xaxis_showgrid=False,
+            yaxis_showgrid=False,
+            xaxis_visible=False,
+            yaxis_visible=False,
+        )
+
+        return fig, {'display': 'none'}, True, []  # Restore clickData and reset
+
+    # If maing graphic has been shown after pressing "volver", and no click has been done to a bubble, reset clickData by hand
+    if reset_data:
+        clickData = None
+
+    # If user hasn't clicked, show initial graph with bubbles
+    if clickData is None:
+        genre_df = pd.DataFrame({
+            'Genre': list(genre_dict.keys()),
+            'Game Count': [len(genre_dict[genre]) for genre in genre_dict]
+        })
+        fig = px.scatter(genre_df,
+                         x=None,
+                         y='Game Count',
+                         size='Game Count',
+                         color='Genre',
+                         hover_name='Genre',
+                         title='Bubble Chart of Games grouped by Genre',
+                         size_max=60)
+
+        fig.update_layout(
+            xaxis_showgrid=False,
+            yaxis_showgrid=False,
+            xaxis_visible=False,
+            yaxis_visible=False,
+        )
+
+        return fig, {'display': 'none'}, False, []  # Don't restore clickData
+
+    # If click has been done, obtain genre wich has been clicked
+    clicked_genre = clickData['points'][0]['hovertext']
+    # Get 10 random games from all of the list of clicked genre
+    top_games = random.sample(genre_dict[clicked_genre], min(len(genre_dict[clicked_genre]), 10))
+
+    # Set HTML labels with game's name and image
+    game_html = [
+        html.Div([
+            html.Img(src=game['img_url'], style={'width': '100px', 'height': '100px', 'display': 'block', 'margin': '0 auto'}),
+            html.P(game['name'], style={'text-align': 'center'}),
+            html.P(game['description'], style={'fontSize': 'small', 'text-align': 'center'})
+        ], style={'display': 'inline-block', 'text-align': 'center', 'margin': '10px'})
+        for game in top_games
+    ]
+    genre_title = html.H2(f"10 Games in Genre: {clicked_genre}", style={'text-align': 'center'})
+
+    # Make an empty graph to avoid showing axis once clicked a bubble
+    fig = px.scatter(x=None, y=None, title="") 
     fig.update_layout(
-        xaxis_showgrid=False,
-        yaxis_showgrid=False,
-        xaxis_visible=False,
-        yaxis_visible=False,
+        xaxis=dict(showgrid=False, visible=False),
+        yaxis=dict(showgrid=False, visible=False),
+        margin=dict(l=0, r=0, t=0, b=0),
     )
-    
-    # Show graphic
-    fig.show()"""
+
+    return fig, {'display': 'block'}, False, [genre_title] + game_html  # Don't restore clickData
+
+# Run the application
+if __name__ == '__main__':
+    app.run_server(debug=False)
