@@ -8,7 +8,7 @@ from dash import dcc, html
 from dash.dependencies import Input, Output, State
 
 # First we set the key in order to be able to get the data from the API
-API_Steam_Key = 'DC5161B0229D2AC6AC15F327189C8613'
+API_Steam_Key = 'HERE GOES YOUR STEAM COOKIE'
 
 # Set the url from which we'll take the data
 url = 'https://api.steampowered.com'
@@ -90,7 +90,7 @@ def getGamesWithGenres(num_games):
 # Run Dash application
 app = dash.Dash(__name__)
 
-# Obtener data
+# Obtain data
 games_data = getGamesWithGenres(1000)
 df = pd.DataFrame(games_data) # Set a DataFrame with obtained games
 """Filter DataFrame, we want only valid genre and avoid null values or other data types.
