@@ -4,11 +4,12 @@ import time
 import random
 import plotly.express as px
 import dash
+import concurrent.futures
 from dash import dcc, html
 from dash.dependencies import Input, Output, State
 
 # First we set the key in order to be able to get the data from the API
-API_Steam_Key = 'HERE GOES YOUR STEAM COOKIE'
+API_Steam_Key = ''
 
 # Set the url from which we'll take the data
 url = 'https://api.steampowered.com'
@@ -39,6 +40,7 @@ def getGameDetails(appid):
     try:
         # Get request for selected game and data transformation to json
         resp = requests.get(f"https://store.steampowered.com/api/appdetails?appids={appid}")
+        resp.raise_for_status()
         game_det = resp.json()
         # If there is appid and the request is valid
         if str(appid) in game_det and game_det[str(appid)]['success']:
@@ -48,18 +50,18 @@ def getGameDetails(appid):
             img_url = data.get('header_image', '') # Obtain image url from game
             short_desc = data.get('short_description', '') # Obtain game description
 
-            # Make sure in genres we have a list, otherwise we set a list to avoid errors in data preprocessing
-            if not isinstance(genres, list):
-                genres = []
-            genre_list = [genre['description'] for genre in genres] # Return genres
-
+            if genres and img_url:
+                genre_list = [genre['description'] for genre in genres] # Return genres
+            
             return genre_list, img_url, short_desc # Return all details
         else:
             print(f"--- Game details not found for game with appid: {appid} ---")
     
     # Handle possible errors during execution
-    except Exception as e:
-            print(f"Error in game with appid {appid}: {e}")
+    except requests.RequestException as e:
+        print(f"Error fetching game with appid: {appid}: {e}")
+    except ValueError as e:
+        print(f"Data error in game with appid {appid}: {e}")
     
     return [], '', '' # If exception, return this parameters to avoid errors during data preprocessing
 
@@ -68,7 +70,7 @@ def getGamesWithGenres(num_games):
     games = getGamesList()[:num_games] # Sample spcified games in parameter
     games_genre = []
 
-    for game in games:
+    def fetch_game_data(game):
         appid = game['appid']
         name = game['name']
         genres, img_url, short_desc = getGameDetails(appid)
@@ -83,15 +85,31 @@ def getGamesWithGenres(num_games):
             })
         else:
             print(f"Skipped game '{name}' because of missing data")
-        time.sleep(1) # Sleep 1 sec between requests to avoid getting blocked
+        time.sleep(10)
 
-    return games_genre 
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        count = 0
+        for game in games:
+            if count >= num_games:
+                break
+            future = executor.submit(fetch_game_data, game)
+            futures.append(future)
+            count += 1
+        
+        concurrent.futures.wait(futures)
+    
+    if len(games_genre) < num_games:
+        print(f"Found {len(games_genre)} complete games")
+
+    return games_genre[:num_games] 
 
 # Run Dash application
 app = dash.Dash(__name__)
 
 # Obtain data
-games_data = getGamesWithGenres(1000)
+games_data = getGamesWithGenres(5000)
 df = pd.DataFrame(games_data) # Set a DataFrame with obtained games
 """Filter DataFrame, we want only valid genre and avoid null values or other data types.
    We use a lambda function where x is every value of genre column. Finally the DataFrame will only
@@ -212,4 +230,4 @@ def display_bubble_chart(clickData, back_click, reset_data):
 
 # Run the application
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    app.run(debug=False)
